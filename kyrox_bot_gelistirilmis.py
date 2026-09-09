@@ -1,9 +1,10 @@
+import os
 import discord
 from discord.ext import commands
 from discord import app_commands
 
 # Discord Developer Portal'dan YENI token al ve buraya yaz.
-BOT_TOKEN = "Bot Token"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 intents = discord.Intents.default()
 intents.members = True
