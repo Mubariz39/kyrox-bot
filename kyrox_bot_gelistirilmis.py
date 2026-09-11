@@ -5,20 +5,14 @@ import asyncio
 import json
 import os
 import re
-import random
 import time
 from datetime import datetime, timedelta
 
 # =========================================================
-# AYARLAR
+# KYXOR BOT
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# Render Environment Variables kısmına bunu eklersen
-# slash komutları anında o sunucuda görünür.
-# Örnek:
-# TEST_GUILD_ID = 123456789012345678
 TEST_GUILD_ID = int(os.getenv("TEST_GUILD_ID", "0"))
 
 DATA_FILE = "kyxor_data.json"
@@ -43,11 +37,10 @@ bot = commands.Bot(
 
 data = {
     "warnings": {},
-    "economy": {},
-    "xp": {},
-    "daily": {},
+    "rank": {},
     "settings": {}
 }
+
 
 def load_data():
     global data
@@ -59,25 +52,79 @@ def load_data():
     except Exception as e:
         print("Veri yükleme hatası:", e)
 
+    data.setdefault("warnings", {})
+    data.setdefault("rank", {})
+    data.setdefault("settings", {})
+
+
 def save_data():
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+            json.dump(
+                data,
+                f,
+                ensure_ascii=False,
+                indent=4
+            )
     except Exception as e:
         print("Veri kaydetme hatası:", e)
+
 
 load_data()
 
 # =========================================================
-# YARDIMCI FONKSİYONLAR
+# DEĞİŞKENLER
 # =========================================================
 
 start_time = time.time()
 
 spam_cache = {}
-xp_cooldown = {}
+rank_activity = {}
+rank_channel = {}
+
+background_started = False
+sync_done = False
+
+# =========================================================
+# RANK SÜRELERİ
+# =========================================================
+#
+# Rank 1  = 30 dakika
+# Rank 2  = 1 saat
+# Rank 3  = 2 saat
+# Rank 4  = 3 saat
+# Rank 5  = 5 saat
+# Rank 6  = 7 saat
+# Rank 7  = 10 saat
+# Rank 8  = 15 saat
+# Rank 9  = 20 saat
+# Rank 10 = 30 saat
+#
+# Aktif süre olarak hesaplanır.
+# Kullanıcı 5 dakika boyunca hiç mesaj atmazsa
+# aktif süre sayımı durur.
+# =========================================================
+
+RANK_TIMES = [
+    30 * 60,
+    60 * 60,
+    2 * 60 * 60,
+    3 * 60 * 60,
+    5 * 60 * 60,
+    7 * 60 * 60,
+    10 * 60 * 60,
+    15 * 60 * 60,
+    20 * 60 * 60,
+    30 * 60 * 60
+]
+
+# =========================================================
+# YARDIMCI FONKSİYONLAR
+# =========================================================
+
 
 def get_guild_data(guild_id):
+
     gid = str(guild_id)
 
     if gid not in data["settings"]:
@@ -91,48 +138,136 @@ def get_guild_data(guild_id):
     return data["settings"][gid]
 
 
-def get_user_economy(guild_id, user_id):
+def get_user_rank(guild_id, user_id):
+
     gid = str(guild_id)
     uid = str(user_id)
 
-    if gid not in data["economy"]:
-        data["economy"][gid] = {}
+    if gid not in data["rank"]:
+        data["rank"][gid] = {}
 
-    if uid not in data["economy"][gid]:
-        data["economy"][gid][uid] = {
-            "balance": 0
+    if uid not in data["rank"][gid]:
+        data["rank"][gid][uid] = {
+            "seconds": 0
         }
 
-    return data["economy"][gid][uid]
+    return data["rank"][gid][uid]
 
 
-def get_user_xp(guild_id, user_id):
-    gid = str(guild_id)
-    uid = str(user_id)
+def get_rank(seconds):
 
-    if gid not in data["xp"]:
-        data["xp"][gid] = {}
+    rank = 0
 
-    if uid not in data["xp"][gid]:
-        data["xp"][gid][uid] = {
-            "xp": 0,
-            "level": 1
-        }
+    for required in RANK_TIMES:
 
-    return data["xp"][gid][uid]
+        if seconds >= required:
+            rank += 1
+
+        else:
+            break
+
+    return rank
 
 
-async def send_log(guild, title, description, color=discord.Color.blue()):
+def format_duration(seconds):
+
+    seconds = int(seconds)
+
+    days, seconds = divmod(
+        seconds,
+        86400
+    )
+
+    hours, seconds = divmod(
+        seconds,
+        3600
+    )
+
+    minutes, _ = divmod(
+        seconds,
+        60
+    )
+
+    parts = []
+
+    if days:
+        parts.append(
+            f"{days} gün"
+        )
+
+    if hours:
+        parts.append(
+            f"{hours} saat"
+        )
+
+    if minutes or not parts:
+        parts.append(
+            f"{minutes} dakika"
+        )
+
+    return " ".join(parts)
+
+
+def rank_progress(seconds):
+
+    current = get_rank(seconds)
+
+    if current >= len(RANK_TIMES):
+
+        return (
+            current,
+            None,
+            0
+        )
+
+    previous = (
+        RANK_TIMES[current - 1]
+        if current > 0
+        else 0
+    )
+
+    target = RANK_TIMES[current]
+
+    progress = max(
+        0,
+        min(
+            seconds - previous,
+            target - previous
+        )
+    )
+
+    return (
+        current,
+        target,
+        progress
+    )
+
+
+async def send_log(
+    guild,
+    title,
+    description,
+    color=discord.Color.blue()
+):
+
     if guild is None:
         return
 
-    settings = get_guild_data(guild.id)
-    channel_id = settings.get("log_channel", 0)
+    settings = get_guild_data(
+        guild.id
+    )
+
+    channel_id = settings.get(
+        "log_channel",
+        0
+    )
 
     if not channel_id:
         return
 
-    channel = guild.get_channel(channel_id)
+    channel = guild.get_channel(
+        channel_id
+    )
 
     if channel is None:
         return
@@ -145,89 +280,179 @@ async def send_log(guild, title, description, color=discord.Color.blue()):
     )
 
     try:
-        await channel.send(embed=embed)
+
+        await channel.send(
+            embed=embed
+        )
+
     except Exception:
         pass
 
 
-def level_required(level):
-    return level * 100
-
-
 # =========================================================
-# BOT HAZIR
+# BOT READY
 # =========================================================
 
 @bot.event
 async def on_ready():
 
+    global background_started
+    global sync_done
+
     print("=" * 50)
-    print(f"Kyxor Bot giriş yaptı: {bot.user}")
-    print(f"Sunucu sayısı: {len(bot.guilds)}")
+    print(
+        f"Kyxor Bot giriş yaptı: {bot.user}"
+    )
+    print(
+        f"Sunucu sayısı: {len(bot.guilds)}"
+    )
     print("=" * 50)
 
     # -----------------------------------------------------
     # SLASH KOMUT SYNC
     # -----------------------------------------------------
 
+    if not sync_done:
+
+        try:
+
+            if TEST_GUILD_ID:
+
+                guild = discord.Object(
+                    id=TEST_GUILD_ID
+                )
+
+                synced = await bot.tree.sync(
+                    guild=guild
+                )
+
+                print(
+                    f"TEST SUNUCUSU: "
+                    f"{len(synced)} komut senkronize edildi."
+                )
+
+            else:
+
+                synced = await bot.tree.sync()
+
+                print(
+                    f"GLOBAL: "
+                    f"{len(synced)} komut senkronize edildi."
+                )
+
+            sync_done = True
+
+        except Exception as e:
+
+            print(
+                "Slash komut sync hatası:",
+                e
+            )
+
+    # -----------------------------------------------------
+    # TICKET VIEW
+    # -----------------------------------------------------
+
     try:
 
-        if TEST_GUILD_ID:
+        bot.add_view(
+            TicketView()
+        )
 
-            guild = discord.Object(id=TEST_GUILD_ID)
-
-            bot.tree.copy_global_to(guild=guild)
-
-            synced = await bot.tree.sync(guild=guild)
-
-            print(
-                f"TEST SUNUCUSU slash komutları senkronize edildi: "
-                f"{len(synced)}"
-            )
-
-        else:
-
-            synced = await bot.tree.sync()
-
-            print(
-                f"GLOBAL slash komutları senkronize edildi: "
-                f"{len(synced)}"
-            )
+        bot.add_view(
+            CloseTicketView()
+        )
 
     except Exception as e:
-        print("Slash komut sync hatası:", e)
+
+        print(
+            "Ticket view hatası:",
+            e
+        )
+
+    # -----------------------------------------------------
+    # BACKGROUND
+    # -----------------------------------------------------
+
+    if not background_started:
+
+        background_started = True
+
+        asyncio.create_task(
+            rank_tracker_loop()
+        )
+
+        asyncio.create_task(
+            autosave_loop()
+        )
 
     print("Bot hazır!")
+
 
 # =========================================================
 # HATA YAKALAMA
 # =========================================================
 
 @bot.tree.error
-async def on_app_command_error(interaction, error):
+async def on_app_command_error(
+    interaction,
+    error
+):
 
-    if isinstance(error, app_commands.MissingPermissions):
+    print(
+        "COMMAND ERROR:",
+        repr(error)
+    )
 
-        text = "❌ Bu komutu kullanmak için yetkin yok."
+    if isinstance(
+        error,
+        app_commands.MissingPermissions
+    ):
 
-    elif isinstance(error, app_commands.BotMissingPermissions):
+        text = (
+            "❌ Bu komutu kullanmak "
+            "için yetkin yok."
+        )
 
-        text = "❌ Botun bu işlem için gerekli yetkileri yok."
+    elif isinstance(
+        error,
+        app_commands.BotMissingPermissions
+    ):
+
+        text = (
+            "❌ Botun bu işlem için "
+            "gerekli yetkileri yok."
+        )
+
+    elif isinstance(
+        error,
+        discord.Forbidden
+    ):
+
+        text = (
+            "❌ Discord botun bu işlemi "
+            "yapmasına izin vermedi. "
+            "Bot yetkilerini kontrol et."
+        )
 
     else:
 
-        print("COMMAND ERROR:", repr(error))
-
-        text = "❌ Komut çalıştırılırken bir hata oluştu."
+        text = (
+            "❌ Komut çalıştırılırken "
+            "bir hata oluştu."
+        )
 
     try:
 
         if interaction.response.is_done():
+
             await interaction.followup.send(
                 text,
                 ephemeral=True
             )
+
         else:
+
             await interaction.response.send_message(
                 text,
                 ephemeral=True
@@ -245,9 +470,13 @@ async def on_app_command_error(interaction, error):
     name="ping",
     description="Botun ping değerini gösterir."
 )
-async def ping(interaction: discord.Interaction):
+async def ping(
+    interaction: discord.Interaction
+):
 
-    latency = round(bot.latency * 1000)
+    latency = round(
+        bot.latency * 1000
+    )
 
     await interaction.response.send_message(
         f"🏓 Pong!\n"
@@ -263,11 +492,15 @@ async def ping(interaction: discord.Interaction):
     name="help",
     description="Botun komutlarını gösterir."
 )
-async def help_command(interaction: discord.Interaction):
+async def help_command(
+    interaction: discord.Interaction
+):
 
     embed = discord.Embed(
         title="🤖 Kyxor Bot",
-        description="Kullanabileceğin komutlar:",
+        description=(
+            "Kullanabileceğin komutlar:"
+        ),
         color=discord.Color.blurple()
     )
 
@@ -302,13 +535,10 @@ async def help_command(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="💰 Ekonomi",
+        name="🏆 Rank",
         value=(
-            "`/balance`\n"
-            "`/daily`\n"
-            "`/work`\n"
-            "`/give`\n"
-            "`/leaderboard`\n"
+            "`/rank`\n"
+            "`/rank-list`\n"
             "`/profile`"
         ),
         inline=False
@@ -316,7 +546,9 @@ async def help_command(interaction: discord.Interaction):
 
     embed.add_field(
         name="🎫 Ticket",
-        value="`/ticket-panel`",
+        value=(
+            "`/ticket-panel`"
+        ),
         inline=False
     )
 
@@ -330,7 +562,9 @@ async def help_command(interaction: discord.Interaction):
         inline=False
     )
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
 # =========================================================
@@ -341,13 +575,16 @@ async def help_command(interaction: discord.Interaction):
     name="server",
     description="Sunucu bilgilerini gösterir."
 )
-async def server(interaction: discord.Interaction):
+async def server(
+    interaction: discord.Interaction
+):
 
     guild = interaction.guild
 
     if guild is None:
+
         return await interaction.response.send_message(
-            "Bu komut sunucuda kullanılabilir."
+            "❌ Bu komut sadece sunucuda kullanılabilir."
         )
 
     embed = discord.Embed(
@@ -357,25 +594,35 @@ async def server(interaction: discord.Interaction):
 
     embed.add_field(
         name="👥 Üyeler",
-        value=str(guild.member_count)
+        value=str(
+            guild.member_count
+        )
     )
 
     embed.add_field(
         name="💬 Kanallar",
-        value=str(len(guild.channels))
+        value=str(
+            len(guild.channels)
+        )
     )
 
     embed.add_field(
         name="🎭 Roller",
-        value=str(len(guild.roles))
+        value=str(
+            len(guild.roles)
+        )
     )
 
     embed.add_field(
         name="🆔 Sunucu ID",
-        value=str(guild.id)
+        value=str(
+            guild.id
+        )
     )
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
 # =========================================================
@@ -386,20 +633,27 @@ async def server(interaction: discord.Interaction):
     name="userinfo",
     description="Kullanıcı bilgilerini gösterir."
 )
-@app_commands.describe(member="Bilgilerini görmek istediğin kullanıcı")
+@app_commands.describe(
+    member="Bilgilerini görmek istediğin kullanıcı"
+)
 async def userinfo(
     interaction: discord.Interaction,
     member: discord.Member = None
 ):
 
-    member = member or interaction.user
+    member = (
+        member
+        or interaction.user
+    )
 
     embed = discord.Embed(
         title=f"👤 {member}",
         color=member.color
     )
 
-    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_thumbnail(
+        url=member.display_avatar.url
+    )
 
     embed.add_field(
         name="🆔 ID",
@@ -417,6 +671,7 @@ async def userinfo(
     )
 
     if member.joined_at:
+
         embed.add_field(
             name="📥 Sunucuya katılma",
             value=discord.utils.format_dt(
@@ -427,12 +682,14 @@ async def userinfo(
         )
 
     embed.add_field(
-        name="🎭 Rol",
+        name="🎭 En yüksek rol",
         value=member.top_role.mention,
         inline=False
     )
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
 # =========================================================
@@ -443,22 +700,33 @@ async def userinfo(
     name="avatar",
     description="Kullanıcının avatarını gösterir."
 )
-@app_commands.describe(member="Avatarını görmek istediğin kullanıcı")
+@app_commands.describe(
+    member="Avatarını görmek istediğin kullanıcı"
+)
 async def avatar(
     interaction: discord.Interaction,
     member: discord.Member = None
 ):
 
-    member = member or interaction.user
+    member = (
+        member
+        or interaction.user
+    )
 
     embed = discord.Embed(
-        title=f"🖼️ {member.display_name} Avatar",
+        title=(
+            f"🖼️ {member.display_name} Avatar"
+        ),
         color=discord.Color.blurple()
     )
 
-    embed.set_image(url=member.display_avatar.url)
+    embed.set_image(
+        url=member.display_avatar.url
+    )
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
 # =========================================================
@@ -467,19 +735,35 @@ async def avatar(
 
 @bot.tree.command(
     name="uptime",
-    description="Botun ne kadar süredir açık olduğunu gösterir."
+    description="Botun çalışma süresini gösterir."
 )
-async def uptime(interaction: discord.Interaction):
+async def uptime(
+    interaction: discord.Interaction
+):
 
-    seconds = int(time.time() - start_time)
+    seconds = int(
+        time.time() - start_time
+    )
 
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
+    days, seconds = divmod(
+        seconds,
+        86400
+    )
+
+    hours, seconds = divmod(
+        seconds,
+        3600
+    )
+
+    minutes, seconds = divmod(
+        seconds,
+        60
+    )
 
     await interaction.response.send_message(
         f"⏱️ Bot çalışma süresi:\n"
-        f"**{days} gün {hours} saat {minutes} dakika {seconds} saniye**"
+        f"**{days} gün {hours} saat "
+        f"{minutes} dakika {seconds} saniye**"
     )
 
 
@@ -491,30 +775,48 @@ async def uptime(interaction: discord.Interaction):
     name="clear",
     description="Mesajları siler."
 )
-@app_commands.describe(amount="Silinecek mesaj sayısı")
-@app_commands.checks.has_permissions(manage_messages=True)
+@app_commands.describe(
+    amount="Silinecek mesaj sayısı"
+)
+@app_commands.checks.has_permissions(
+    manage_messages=True
+)
 async def clear(
     interaction: discord.Interaction,
     amount: app_commands.Range[int, 1, 100]
 ):
 
-    await interaction.response.defer(ephemeral=True)
-
-    deleted = await interaction.channel.purge(
-        limit=amount
-    )
-
-    await interaction.followup.send(
-        f"🧹 **{len(deleted)}** mesaj silindi.",
+    await interaction.response.defer(
         ephemeral=True
     )
 
-    await send_log(
-        interaction.guild,
-        "🧹 Mesajlar Silindi",
-        f"{interaction.user.mention} {len(deleted)} mesaj sildi.",
-        discord.Color.orange()
-    )
+    try:
+
+        deleted = await interaction.channel.purge(
+            limit=amount
+        )
+
+        await interaction.followup.send(
+            f"🧹 **{len(deleted)}** mesaj silindi.",
+            ephemeral=True
+        )
+
+        await send_log(
+            interaction.guild,
+            "🧹 Mesajlar Silindi",
+            (
+                f"{interaction.user.mention} "
+                f"{len(deleted)} mesaj sildi."
+            ),
+            discord.Color.orange()
+        )
+
+    except Exception as e:
+
+        await interaction.followup.send(
+            f"❌ Hata: `{e}`",
+            ephemeral=True
+        )
 
 
 # =========================================================
@@ -529,31 +831,44 @@ async def clear(
     member="Uyarılacak kullanıcı",
     reason="Uyarı sebebi"
 )
-@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.checks.has_permissions(
+    moderate_members=True
+)
 async def warn(
     interaction: discord.Interaction,
     member: discord.Member,
     reason: str = "Sebep belirtilmedi"
 ):
 
-    gid = str(interaction.guild.id)
-    uid = str(member.id)
+    gid = str(
+        interaction.guild.id
+    )
+
+    uid = str(
+        member.id
+    )
 
     if gid not in data["warnings"]:
+
         data["warnings"][gid] = {}
 
     if uid not in data["warnings"][gid]:
+
         data["warnings"][gid][uid] = []
 
-    data["warnings"][gid][uid].append({
-        "reason": reason,
-        "moderator": interaction.user.id,
-        "time": datetime.utcnow().isoformat()
-    })
+    data["warnings"][gid][uid].append(
+        {
+            "reason": reason,
+            "moderator": interaction.user.id,
+            "time": datetime.utcnow().isoformat()
+        }
+    )
 
     save_data()
 
-    count = len(data["warnings"][gid][uid])
+    count = len(
+        data["warnings"][gid][uid]
+    )
 
     await interaction.response.send_message(
         f"⚠️ {member.mention} uyarıldı.\n"
@@ -564,9 +879,11 @@ async def warn(
     await send_log(
         interaction.guild,
         "⚠️ Kullanıcı Uyarıldı",
-        f"{member.mention}\n"
-        f"Yetkili: {interaction.user.mention}\n"
-        f"Sebep: {reason}",
+        (
+            f"{member.mention}\n"
+            f"Yetkili: {interaction.user.mention}\n"
+            f"Sebep: {reason}"
+        ),
         discord.Color.yellow()
     )
 
@@ -579,22 +896,29 @@ async def warn(
     name="warnings",
     description="Kullanıcının uyarılarını gösterir."
 )
-@app_commands.describe(member="Uyarılarını görmek istediğin kullanıcı")
-@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.describe(
+    member="Uyarılarını görmek istediğin kullanıcı"
+)
+@app_commands.checks.has_permissions(
+    moderate_members=True
+)
 async def warnings(
     interaction: discord.Interaction,
     member: discord.Member
 ):
 
-    gid = str(interaction.guild.id)
-    uid = str(member.id)
+    gid = str(
+        interaction.guild.id
+    )
 
-    warnings_list = data["warnings"].get(
-        gid,
-        {}
-    ).get(
-        uid,
-        []
+    uid = str(
+        member.id
+    )
+
+    warnings_list = (
+        data["warnings"]
+        .get(gid, {})
+        .get(uid, [])
     )
 
     if not warnings_list:
@@ -621,7 +945,9 @@ async def warnings(
         color=discord.Color.orange()
     )
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
 # =========================================================
@@ -637,7 +963,9 @@ async def warnings(
     minutes="Kaç dakika susturulacak",
     reason="Sebep"
 )
-@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.checks.has_permissions(
+    moderate_members=True
+)
 async def mute(
     interaction: discord.Interaction,
     member: discord.Member,
@@ -646,12 +974,14 @@ async def mute(
 ):
 
     if member == interaction.guild.owner:
+
         return await interaction.response.send_message(
             "❌ Sunucu sahibini susturamazsın.",
             ephemeral=True
         )
 
     if member.top_role >= interaction.user.top_role:
+
         return await interaction.response.send_message(
             "❌ Bu kullanıcı seninle aynı veya daha yüksek role sahip.",
             ephemeral=True
@@ -660,22 +990,27 @@ async def mute(
     try:
 
         await member.timeout(
-            timedelta(minutes=minutes),
+            timedelta(
+                minutes=minutes
+            ),
             reason=reason
         )
 
         await interaction.response.send_message(
-            f"🔇 {member.mention} **{minutes} dakika** susturuldu.\n"
+            f"🔇 {member.mention} "
+            f"**{minutes} dakika** susturuldu.\n"
             f"Sebep: {reason}"
         )
 
         await send_log(
             interaction.guild,
             "🔇 Kullanıcı Susturuldu",
-            f"{member.mention}\n"
-            f"Yetkili: {interaction.user.mention}\n"
-            f"Süre: {minutes} dakika\n"
-            f"Sebep: {reason}",
+            (
+                f"{member.mention}\n"
+                f"Yetkili: {interaction.user.mention}\n"
+                f"Süre: {minutes} dakika\n"
+                f"Sebep: {reason}"
+            ),
             discord.Color.red()
         )
 
@@ -695,8 +1030,12 @@ async def mute(
     name="unmute",
     description="Kullanıcının susturmasını kaldırır."
 )
-@app_commands.describe(member="Susturması kaldırılacak kullanıcı")
-@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.describe(
+    member="Susturması kaldırılacak kullanıcı"
+)
+@app_commands.checks.has_permissions(
+    moderate_members=True
+)
 async def unmute(
     interaction: discord.Interaction,
     member: discord.Member
@@ -706,7 +1045,10 @@ async def unmute(
 
         await member.timeout(
             None,
-            reason=f"Yetkili: {interaction.user}"
+            reason=(
+                f"Yetkili: "
+                f"{interaction.user}"
+            )
         )
 
         await interaction.response.send_message(
@@ -733,7 +1075,9 @@ async def unmute(
     member="Atılacak kullanıcı",
     reason="Sebep"
 )
-@app_commands.checks.has_permissions(kick_members=True)
+@app_commands.checks.has_permissions(
+    kick_members=True
+)
 async def kick(
     interaction: discord.Interaction,
     member: discord.Member,
@@ -741,6 +1085,7 @@ async def kick(
 ):
 
     if member.top_role >= interaction.user.top_role:
+
         return await interaction.response.send_message(
             "❌ Bu kullanıcı seninle aynı veya daha yüksek role sahip.",
             ephemeral=True
@@ -748,7 +1093,9 @@ async def kick(
 
     try:
 
-        await member.kick(reason=reason)
+        await member.kick(
+            reason=reason
+        )
 
         await interaction.response.send_message(
             f"👢 {member} sunucudan atıldı.\n"
@@ -758,9 +1105,11 @@ async def kick(
         await send_log(
             interaction.guild,
             "👢 Kullanıcı Atıldı",
-            f"Kullanıcı: {member}\n"
-            f"Yetkili: {interaction.user.mention}\n"
-            f"Sebep: {reason}",
+            (
+                f"Kullanıcı: {member}\n"
+                f"Yetkili: {interaction.user.mention}\n"
+                f"Sebep: {reason}"
+            ),
             discord.Color.red()
         )
 
@@ -784,7 +1133,9 @@ async def kick(
     member="Yasaklanacak kullanıcı",
     reason="Sebep"
 )
-@app_commands.checks.has_permissions(ban_members=True)
+@app_commands.checks.has_permissions(
+    ban_members=True
+)
 async def ban(
     interaction: discord.Interaction,
     member: discord.Member,
@@ -792,12 +1143,14 @@ async def ban(
 ):
 
     if member == interaction.guild.owner:
+
         return await interaction.response.send_message(
             "❌ Sunucu sahibini yasaklayamazsın.",
             ephemeral=True
         )
 
     if member.top_role >= interaction.user.top_role:
+
         return await interaction.response.send_message(
             "❌ Bu kullanıcı seninle aynı veya daha yüksek role sahip.",
             ephemeral=True
@@ -805,7 +1158,9 @@ async def ban(
 
     try:
 
-        await member.ban(reason=reason)
+        await member.ban(
+            reason=reason
+        )
 
         await interaction.response.send_message(
             f"🔨 {member} yasaklandı.\n"
@@ -815,9 +1170,11 @@ async def ban(
         await send_log(
             interaction.guild,
             "🔨 Kullanıcı Yasaklandı",
-            f"Kullanıcı: {member}\n"
-            f"Yetkili: {interaction.user.mention}\n"
-            f"Sebep: {reason}",
+            (
+                f"Kullanıcı: {member}\n"
+                f"Yetkili: {interaction.user.mention}\n"
+                f"Sebep: {reason}"
+            ),
             discord.Color.dark_red()
         )
 
@@ -837,8 +1194,12 @@ async def ban(
     name="unban",
     description="Yasaklı kullanıcının banını kaldırır."
 )
-@app_commands.describe(user_id="Kullanıcının Discord ID'si")
-@app_commands.checks.has_permissions(ban_members=True)
+@app_commands.describe(
+    user_id="Kullanıcının Discord ID'si"
+)
+@app_commands.checks.has_permissions(
+    ban_members=True
+)
 async def unban(
     interaction: discord.Interaction,
     user_id: str
@@ -846,11 +1207,16 @@ async def unban(
 
     try:
 
-        user = await bot.fetch_user(int(user_id))
+        user = await bot.fetch_user(
+            int(user_id)
+        )
 
         await interaction.guild.unban(
             user,
-            reason=f"Yetkili: {interaction.user}"
+            reason=(
+                f"Yetkili: "
+                f"{interaction.user}"
+            )
         )
 
         await interaction.response.send_message(
@@ -890,19 +1256,30 @@ async def unban(
 @app_commands.describe(
     seconds="0-21600 saniye"
 )
-@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.checks.has_permissions(
+    manage_channels=True
+)
 async def slowmode(
     interaction: discord.Interaction,
     seconds: app_commands.Range[int, 0, 21600]
 ):
 
-    await interaction.channel.edit(
-        slowmode_delay=seconds
-    )
+    try:
 
-    await interaction.response.send_message(
-        f"🐢 Yavaş mod **{seconds} saniye** olarak ayarlandı."
-    )
+        await interaction.channel.edit(
+            slowmode_delay=seconds
+        )
+
+        await interaction.response.send_message(
+            f"🐢 Yavaş mod **{seconds} saniye** olarak ayarlandı."
+        )
+
+    except Exception as e:
+
+        await interaction.response.send_message(
+            f"❌ Hata: `{e}`",
+            ephemeral=True
+        )
 
 
 # =========================================================
@@ -913,25 +1290,38 @@ async def slowmode(
     name="lock",
     description="Kanalı kilitler."
 )
-@app_commands.checks.has_permissions(manage_channels=True)
-async def lock(interaction: discord.Interaction):
+@app_commands.checks.has_permissions(
+    manage_channels=True
+)
+async def lock(
+    interaction: discord.Interaction
+):
 
-    channel = interaction.channel
+    try:
 
-    overwrite = channel.overwrites_for(
-        interaction.guild.default_role
-    )
+        channel = interaction.channel
 
-    overwrite.send_messages = False
+        overwrite = channel.overwrites_for(
+            interaction.guild.default_role
+        )
 
-    await channel.set_permissions(
-        interaction.guild.default_role,
-        overwrite=overwrite
-    )
+        overwrite.send_messages = False
 
-    await interaction.response.send_message(
-        "🔒 Kanal kilitlendi."
-    )
+        await channel.set_permissions(
+            interaction.guild.default_role,
+            overwrite=overwrite
+        )
+
+        await interaction.response.send_message(
+            "🔒 Kanal kilitlendi."
+        )
+
+    except Exception as e:
+
+        await interaction.response.send_message(
+            f"❌ Hata: `{e}`",
+            ephemeral=True
+        )
 
 
 # =========================================================
@@ -942,211 +1332,145 @@ async def lock(interaction: discord.Interaction):
     name="unlock",
     description="Kanalın kilidini açar."
 )
-@app_commands.checks.has_permissions(manage_channels=True)
-async def unlock(interaction: discord.Interaction):
+@app_commands.checks.has_permissions(
+    manage_channels=True
+)
+async def unlock(
+    interaction: discord.Interaction
+):
 
-    channel = interaction.channel
+    try:
 
-    overwrite = channel.overwrites_for(
-        interaction.guild.default_role
-    )
+        channel = interaction.channel
 
-    overwrite.send_messages = None
+        overwrite = channel.overwrites_for(
+            interaction.guild.default_role
+        )
 
-    await channel.set_permissions(
-        interaction.guild.default_role,
-        overwrite=overwrite
-    )
+        overwrite.send_messages = None
 
-    await interaction.response.send_message(
-        "🔓 Kanalın kilidi açıldı."
-    )
+        await channel.set_permissions(
+            interaction.guild.default_role,
+            overwrite=overwrite
+        )
+
+        await interaction.response.send_message(
+            "🔓 Kanalın kilidi açıldı."
+        )
+
+    except Exception as e:
+
+        await interaction.response.send_message(
+            f"❌ Hata: `{e}`",
+            ephemeral=True
+        )
 
 
 # =========================================================
-# ECONOMY - BALANCE
+# RANK
 # =========================================================
 
 @bot.tree.command(
-    name="balance",
-    description="Bakiyeni gösterir."
+    name="rank",
+    description="Kullanıcının rankını gösterir."
 )
-@app_commands.describe(member="Bakiyesini görmek istediğin kullanıcı")
-async def balance(
+@app_commands.describe(
+    member="Rankını görmek istediğin kullanıcı"
+)
+async def rank_command(
     interaction: discord.Interaction,
     member: discord.Member = None
 ):
 
-    member = member or interaction.user
+    member = (
+        member
+        or interaction.user
+    )
 
-    account = get_user_economy(
+    user = get_user_rank(
         interaction.guild.id,
         member.id
     )
 
-    await interaction.response.send_message(
-        f"💰 {member.mention} bakiyesi: "
-        f"**{account['balance']:,} KyxCoin**"
+    seconds = user.get(
+        "seconds",
+        0
     )
 
+    current, target, progress = rank_progress(
+        seconds
+    )
 
-# =========================================================
-# DAILY
-# =========================================================
+    if target is None:
 
-@bot.tree.command(
-    name="daily",
-    description="Günlük ödülünü al."
-)
-async def daily(interaction: discord.Interaction):
-
-    gid = str(interaction.guild.id)
-    uid = str(interaction.user.id)
-
-    if gid not in data["daily"]:
-        data["daily"][gid] = {}
-
-    now = time.time()
-
-    last = data["daily"][gid].get(uid, 0)
-
-    if now - last < 86400:
-
-        remaining = int(
-            86400 - (now - last)
+        progress_text = (
+            "🏆 Maksimum ranka ulaştın!"
         )
 
-        hours = remaining // 3600
-        minutes = (remaining % 3600) // 60
+    else:
 
-        return await interaction.response.send_message(
-            f"⏳ Günlük ödülünü zaten aldın.\n"
-            f"**{hours} saat {minutes} dakika** sonra tekrar alabilirsin.",
-            ephemeral=True
+        remaining = (
+            target - seconds
         )
 
-    account = get_user_economy(
-        interaction.guild.id,
-        interaction.user.id
+        progress_text = (
+            f"🎯 Sonraki rank: "
+            f"**Rank {current + 1}**\n"
+            f"⏳ Kalan süre: "
+            f"**{format_duration(remaining)}**"
+        )
+
+    embed = discord.Embed(
+        title=(
+            f"🏆 {member.display_name} Rank"
+        ),
+        color=discord.Color.gold()
     )
 
-    reward = random.randint(250, 750)
+    embed.set_thumbnail(
+        url=member.display_avatar.url
+    )
 
-    account["balance"] += reward
+    embed.add_field(
+        name="🏅 Rank",
+        value=f"**{current}**",
+        inline=True
+    )
 
-    data["daily"][gid][uid] = now
+    embed.add_field(
+        name="⏱️ Aktif süre",
+        value=format_duration(seconds),
+        inline=True
+    )
 
-    save_data()
+    embed.add_field(
+        name="📈 Durum",
+        value=progress_text,
+        inline=False
+    )
 
     await interaction.response.send_message(
-        f"🎁 Günlük ödülün: **{reward:,} KyxCoin**\n"
-        f"💰 Yeni bakiye: **{account['balance']:,}**"
+        embed=embed
     )
 
 
 # =========================================================
-# WORK
+# RANK LIST
 # =========================================================
 
 @bot.tree.command(
-    name="work",
-    description="Çalışarak para kazan."
+    name="rank-list",
+    description="Sunucudaki rank sıralamasını gösterir."
 )
-async def work(interaction: discord.Interaction):
-
-    account = get_user_economy(
-        interaction.guild.id,
-        interaction.user.id
-    )
-
-    reward = random.randint(50, 300)
-
-    jobs = [
-        "Discord geliştiricisi oldun 💻",
-        "Sunucu yöneticiliği yaptın 🛡️",
-        "Kod yazdın 👨‍💻",
-        "Ticket çözdün 🎫",
-        "Bot geliştirdin 🤖",
-        "Sunucuyu düzenledin 🔧"
-    ]
-
-    job = random.choice(jobs)
-
-    account["balance"] += reward
-
-    save_data()
-
-    await interaction.response.send_message(
-        f"💼 {job}\n"
-        f"💰 Kazanç: **{reward:,} KyxCoin**"
-    )
-
-
-# =========================================================
-# GIVE
-# =========================================================
-
-@bot.tree.command(
-    name="give",
-    description="Başka bir kullanıcıya para gönder."
-)
-@app_commands.describe(
-    member="Para gönderilecek kullanıcı",
-    amount="Gönderilecek miktar"
-)
-async def give(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    amount: app_commands.Range[int, 1, 1000000]
+async def rank_list(
+    interaction: discord.Interaction
 ):
 
-    if member.bot:
-        return await interaction.response.send_message(
-            "❌ Botlara para gönderemezsin.",
-            ephemeral=True
-        )
-
-    sender = get_user_economy(
-        interaction.guild.id,
-        interaction.user.id
+    gid = str(
+        interaction.guild.id
     )
 
-    receiver = get_user_economy(
-        interaction.guild.id,
-        member.id
-    )
-
-    if sender["balance"] < amount:
-
-        return await interaction.response.send_message(
-            "❌ Yeterli paran yok.",
-            ephemeral=True
-        )
-
-    sender["balance"] -= amount
-    receiver["balance"] += amount
-
-    save_data()
-
-    await interaction.response.send_message(
-        f"💸 {member.mention} kullanıcısına "
-        f"**{amount:,} KyxCoin** gönderdin."
-    )
-
-
-# =========================================================
-# LEADERBOARD
-# =========================================================
-
-@bot.tree.command(
-    name="leaderboard",
-    description="Ekonomi sıralamasını gösterir."
-)
-async def leaderboard(interaction: discord.Interaction):
-
-    gid = str(interaction.guild.id)
-
-    guild_data = data["economy"].get(
+    guild_data = data["rank"].get(
         gid,
         {}
     )
@@ -1154,18 +1478,21 @@ async def leaderboard(interaction: discord.Interaction):
     if not guild_data:
 
         return await interaction.response.send_message(
-            "📊 Henüz ekonomi verisi yok."
+            "📊 Henüz rank verisi yok."
         )
 
     sorted_users = sorted(
         guild_data.items(),
-        key=lambda x: x[1].get("balance", 0),
+        key=lambda item: item[1].get(
+            "seconds",
+            0
+        ),
         reverse=True
     )
 
-    text = ""
+    lines = []
 
-    for i, (uid, account) in enumerate(
+    for i, (uid, info) in enumerate(
         sorted_users[:10],
         1
     ):
@@ -1174,52 +1501,72 @@ async def leaderboard(interaction: discord.Interaction):
             int(uid)
         )
 
-        name = member.display_name if member else f"ID {uid}"
+        if not member:
+            continue
 
-        text += (
-            f"**{i}.** {name} — "
-            f"💰 {account.get('balance', 0):,}\n"
+        seconds = info.get(
+            "seconds",
+            0
+        )
+
+        lines.append(
+            f"**{i}.** "
+            f"{member.mention} — "
+            f"🏆 Rank **{get_rank(seconds)}** — "
+            f"⏱️ {format_duration(seconds)}"
+        )
+
+    if not lines:
+
+        return await interaction.response.send_message(
+            "📊 Henüz rank verisi yok."
         )
 
     embed = discord.Embed(
-        title="🏆 KyxCoin Liderlik Tablosu",
-        description=text,
+        title="🏆 Kyxor Rank Sıralaması",
+        description="\n".join(lines),
         color=discord.Color.gold()
     )
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
 # =========================================================
-# XP / PROFILE
+# PROFILE
 # =========================================================
 
 @bot.tree.command(
     name="profile",
-    description="XP ve seviye bilgini gösterir."
+    description="Rank profilini gösterir."
 )
-@app_commands.describe(member="Profilini görmek istediğin kullanıcı")
+@app_commands.describe(
+    member="Profilini görmek istediğin kullanıcı"
+)
 async def profile(
     interaction: discord.Interaction,
     member: discord.Member = None
 ):
 
-    member = member or interaction.user
+    member = (
+        member
+        or interaction.user
+    )
 
-    user = get_user_xp(
+    user = get_user_rank(
         interaction.guild.id,
         member.id
     )
 
-    balance_data = get_user_economy(
-        interaction.guild.id,
-        member.id
+    seconds = user.get(
+        "seconds",
+        0
     )
 
-    level = user["level"]
-    xp = user["xp"]
-
-    required = level_required(level)
+    current, target, _ = rank_progress(
+        seconds
+    )
 
     embed = discord.Embed(
         title=f"👤 {member.display_name}",
@@ -1231,19 +1578,35 @@ async def profile(
     )
 
     embed.add_field(
-        name="⭐ Level",
-        value=str(level)
+        name="🏆 Rank",
+        value=str(current),
+        inline=True
     )
 
     embed.add_field(
-        name="✨ XP",
-        value=f"{xp}/{required}"
+        name="⏱️ Aktif süre",
+        value=format_duration(seconds),
+        inline=True
     )
 
-    embed.add_field(
-        name="💰 KyxCoin",
-        value=f"{balance_data['balance']:,}"
-    )
+    if target is None:
+
+        embed.add_field(
+            name="🎯 Sonraki",
+            value="Maksimum rank",
+            inline=False
+        )
+
+    else:
+
+        embed.add_field(
+            name="🎯 Sonraki rank",
+            value=(
+                f"Rank {current + 1} • "
+                f"{format_duration(target - seconds)} kaldı"
+            ),
+            inline=False
+        )
 
     await interaction.response.send_message(
         embed=embed
@@ -1256,21 +1619,38 @@ async def profile(
 
 @bot.tree.command(
     name="say",
-    description="Botun yazı göndermesini sağlar."
+    description="Botun mesaj göndermesini sağlar."
 )
-@app_commands.describe(message="Gönderilecek mesaj")
-@app_commands.checks.has_permissions(manage_messages=True)
+@app_commands.describe(
+    message="Gönderilecek mesaj"
+)
+@app_commands.checks.has_permissions(
+    manage_messages=True
+)
 async def say(
     interaction: discord.Interaction,
     message: str
 ):
 
-    await interaction.response.send_message(
-        "✅ Mesaj gönderildi.",
-        ephemeral=True
-    )
+    try:
 
-    await interaction.channel.send(message)
+        await interaction.response.send_message(
+            "✅ Mesaj gönderildi.",
+            ephemeral=True
+        )
+
+        await interaction.channel.send(
+            message
+        )
+
+    except Exception as e:
+
+        if not interaction.response.is_done():
+
+            await interaction.response.send_message(
+                f"❌ Hata: `{e}`",
+                ephemeral=True
+            )
 
 
 # =========================================================
@@ -1285,7 +1665,9 @@ async def say(
     title="Duyuru başlığı",
     message="Duyuru mesajı"
 )
-@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(
+    manage_guild=True
+)
 async def announce(
     interaction: discord.Interaction,
     title: str,
@@ -1300,7 +1682,10 @@ async def announce(
     )
 
     embed.set_footer(
-        text=f"Kyxor Bot • {interaction.guild.name}"
+        text=(
+            f"Kyxor Bot • "
+            f"{interaction.guild.name}"
+        )
     )
 
     await interaction.response.send_message(
@@ -1316,7 +1701,9 @@ async def announce(
     name="social",
     description="Sosyal medya bilgilerini gösterir."
 )
-async def social(interaction: discord.Interaction):
+async def social(
+    interaction: discord.Interaction
+):
 
     embed = discord.Embed(
         title="🌐 Kyxor Sosyal Medya",
@@ -1338,10 +1725,15 @@ async def social(interaction: discord.Interaction):
 # TICKET SİSTEMİ
 # =========================================================
 
-class TicketView(discord.ui.View):
+class TicketView(
+    discord.ui.View
+):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
         label="🎫 Ticket Aç",
@@ -1356,17 +1748,32 @@ class TicketView(discord.ui.View):
 
         guild = interaction.guild
 
-        # Aynı kullanıcının açık ticketını kontrol et
+        if guild is None:
+
+            return await interaction.response.send_message(
+                "❌ Bu buton sadece sunucuda kullanılabilir.",
+                ephemeral=True
+            )
+
+        # Aynı kullanıcının açık ticketı
         for channel in guild.text_channels:
 
-            if channel.topic == f"ticket-owner:{interaction.user.id}":
+            if channel.topic == (
+                f"ticket-owner:"
+                f"{interaction.user.id}"
+            ):
 
                 return await interaction.response.send_message(
-                    f"❌ Zaten açık bir ticketın var: {channel.mention}",
+                    (
+                        f"❌ Zaten açık bir ticketın var: "
+                        f"{channel.mention}"
+                    ),
                     ephemeral=True
                 )
 
-        settings = get_guild_data(guild.id)
+        settings = get_guild_data(
+            guild.id
+        )
 
         category = None
 
@@ -1376,60 +1783,102 @@ class TicketView(discord.ui.View):
         )
 
         if category_id:
+
             category = guild.get_channel(
                 category_id
             )
 
         overwrites = {
-            guild.default_role: discord.PermissionOverwrite(
-                view_channel=False
-            ),
-            interaction.user: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True
-            ),
-            guild.me: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                manage_channels=True
-            )
+
+            guild.default_role:
+                discord.PermissionOverwrite(
+                    view_channel=False
+                ),
+
+            interaction.user:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
+                ),
+
+            guild.me:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    manage_channels=True
+                )
         }
 
-        channel = await guild.create_text_channel(
-            name=f"ticket-{interaction.user.name}".lower()[:90],
-            category=category,
-            overwrites=overwrites,
-            topic=f"ticket-owner:{interaction.user.id}"
-        )
+        try:
 
-        embed = discord.Embed(
-            title="🎫 Ticket",
-            description=(
-                f"Merhaba {interaction.user.mention}!\n\n"
-                "Yetkililer en kısa sürede seninle ilgilenecektir.\n"
-                "Ticketı kapatmak için aşağıdaki butona bas."
-            ),
-            color=discord.Color.green()
-        )
+            channel = await guild.create_text_channel(
+                name=(
+                    f"ticket-"
+                    f"{interaction.user.name}"
+                ).lower()[:90],
+                category=category,
+                overwrites=overwrites,
+                topic=(
+                    f"ticket-owner:"
+                    f"{interaction.user.id}"
+                )
+            )
 
-        await channel.send(
-            content=interaction.user.mention,
-            embed=embed,
-            view=CloseTicketView()
-        )
+            embed = discord.Embed(
+                title="🎫 Ticket",
+                description=(
+                    f"Merhaba {interaction.user.mention}!\n\n"
+                    "Yetkililer en kısa sürede "
+                    "seninle ilgilenecektir.\n\n"
+                    "Ticketı kapatmak için aşağıdaki "
+                    "butona bas."
+                ),
+                color=discord.Color.green()
+            )
 
-        await interaction.response.send_message(
-            f"✅ Ticket oluşturuldu: {channel.mention}",
-            ephemeral=True
-        )
+            await channel.send(
+                content=interaction.user.mention,
+                embed=embed,
+                view=CloseTicketView()
+            )
+
+            await interaction.response.send_message(
+                (
+                    f"✅ Ticket oluşturuldu: "
+                    f"{channel.mention}"
+                ),
+                ephemeral=True
+            )
+
+        except discord.Forbidden:
+
+            await interaction.response.send_message(
+                (
+                    "❌ Ticket oluşturmak için "
+                    "botta **Kanalları Yönet** yetkisi gerekli."
+                ),
+                ephemeral=True
+            )
+
+        except Exception as e:
+
+            await interaction.response.send_message(
+                f"❌ Ticket hatası: `{e}`",
+                ephemeral=True
+            )
 
 
-class CloseTicketView(discord.ui.View):
+class CloseTicketView(
+    discord.ui.View
+):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
         label="🔒 Ticket Kapat",
@@ -1449,7 +1898,9 @@ class CloseTicketView(discord.ui.View):
         await asyncio.sleep(5)
 
         try:
+
             await interaction.channel.delete()
+
         except Exception:
             pass
 
@@ -1462,7 +1913,9 @@ class CloseTicketView(discord.ui.View):
     name="ticket-panel",
     description="Ticket paneli oluşturur."
 )
-@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.checks.has_permissions(
+    manage_guild=True
+)
 async def ticket_panel(
     interaction: discord.Interaction
 ):
@@ -1483,7 +1936,7 @@ async def ticket_panel(
 
 
 # =========================================================
-# XP SİSTEMİ + AUTOMOD
+# AUTOMOD
 # =========================================================
 
 LINK_REGEX = re.compile(
@@ -1497,68 +1950,48 @@ BAD_WORDS = [
     "free-nitro"
 ]
 
+
 @bot.event
-async def on_message(message):
+async def on_message(
+    message
+):
 
     if message.author.bot:
         return
 
     if message.guild is None:
+
+        await bot.process_commands(
+            message
+        )
+
         return
 
-    # -----------------------------------------------------
-    # XP
-    # -----------------------------------------------------
+    now = time.time()
 
     key = (
         message.guild.id,
         message.author.id
     )
 
-    now = time.time()
-
-    if now - xp_cooldown.get(key, 0) >= 60:
-
-        xp_cooldown[key] = now
-
-        user = get_user_xp(
-            message.guild.id,
-            message.author.id
-        )
-
-        gained = random.randint(10, 25)
-
-        user["xp"] += gained
-
-        required = level_required(
-            user["level"]
-        )
-
-        if user["xp"] >= required:
-
-            user["xp"] -= required
-
-            user["level"] += 1
-
-            try:
-
-                await message.channel.send(
-                    f"🎉 {message.author.mention} "
-                    f"**Level {user['level']}** oldun!"
-                )
-
-            except Exception:
-                pass
-
-        save_data()
-
     # -----------------------------------------------------
-    # AUTOMOD LINK
+    # RANK AKTİFLİĞİ
     # -----------------------------------------------------
 
-    if LINK_REGEX.search(message.content):
+    rank_activity[key] = now
+    rank_channel[key] = message.channel.id
 
-        lowered = message.content.lower()
+    # -----------------------------------------------------
+    # LINK KORUMASI
+    # -----------------------------------------------------
+
+    if LINK_REGEX.search(
+        message.content
+    ):
+
+        lowered = (
+            message.content.lower()
+        )
 
         allowed = (
             "youtube.com",
@@ -1578,15 +2011,20 @@ async def on_message(message):
                 await message.delete()
 
                 await message.channel.send(
-                    f"🚫 {message.author.mention} "
-                    "izinsiz link gönderemezsin.",
+                    (
+                        f"🚫 {message.author.mention} "
+                        "izinsiz link gönderemezsin."
+                    ),
                     delete_after=5
                 )
 
                 await send_log(
                     message.guild,
                     "🚫 Link Engellendi",
-                    f"{message.author.mention} izinsiz link gönderdi.",
+                    (
+                        f"{message.author.mention} "
+                        "izinsiz link gönderdi."
+                    ),
                     discord.Color.red()
                 )
 
@@ -1596,7 +2034,7 @@ async def on_message(message):
                 pass
 
     # -----------------------------------------------------
-    # BASİT SPAM KORUMASI
+    # SPAM KORUMASI
     # -----------------------------------------------------
 
     spam_key = (
@@ -1610,13 +2048,18 @@ async def on_message(message):
     )
 
     timestamps = [
-        t for t in timestamps
+        t
+        for t in timestamps
         if now - t < 5
     ]
 
-    timestamps.append(now)
+    timestamps.append(
+        now
+    )
 
-    spam_cache[spam_key] = timestamps
+    spam_cache[
+        spam_key
+    ] = timestamps
 
     if len(timestamps) >= 6:
 
@@ -1625,22 +2068,34 @@ async def on_message(message):
             await message.delete()
 
             await message.author.timeout(
-                timedelta(seconds=30),
+                timedelta(
+                    seconds=30
+                ),
                 reason="Spam koruması"
             )
 
             await message.channel.send(
-                f"🚨 {message.author.mention} "
-                "spam nedeniyle 30 saniye susturuldu.",
+                (
+                    f"🚨 {message.author.mention} "
+                    "spam nedeniyle 30 saniye susturuldu."
+                ),
                 delete_after=5
             )
 
-            spam_cache[spam_key] = []
+            spam_cache[
+                spam_key
+            ] = []
 
         except Exception:
             pass
 
-    await bot.process_commands(message)
+    # -----------------------------------------------------
+    # KOMUTLARI ÇALIŞTIR
+    # -----------------------------------------------------
+
+    await bot.process_commands(
+        message
+    )
 
 
 # =========================================================
@@ -1648,13 +2103,18 @@ async def on_message(message):
 # =========================================================
 
 @bot.event
-async def on_member_join(member):
+async def on_member_join(
+    member
+):
 
     settings = get_guild_data(
         member.guild.id
     )
 
-    # Auto role
+    # -----------------------------------------------------
+    # AUTO ROLE
+    # -----------------------------------------------------
+
     role_id = settings.get(
         "auto_role",
         0
@@ -1669,11 +2129,18 @@ async def on_member_join(member):
         if role:
 
             try:
-                await member.add_roles(role)
+
+                await member.add_roles(
+                    role
+                )
+
             except Exception:
                 pass
 
-    # Welcome
+    # -----------------------------------------------------
+    # WELCOME
+    # -----------------------------------------------------
+
     channel_id = settings.get(
         "welcome_channel",
         0
@@ -1691,7 +2158,8 @@ async def on_member_join(member):
                 title="👋 Hoş Geldin!",
                 description=(
                     f"Hoş geldin {member.mention}!\n"
-                    f"Sunucumuzda artık **{member.guild.member_count}** üyeyiz."
+                    f"Sunucumuzda artık "
+                    f"**{member.guild.member_count}** üyeyiz."
                 ),
                 color=discord.Color.green()
             )
@@ -1701,11 +2169,107 @@ async def on_member_join(member):
             )
 
             try:
+
                 await channel.send(
                     embed=embed
                 )
+
             except Exception:
                 pass
+
+
+# =========================================================
+# RANK TAKİP
+# =========================================================
+
+async def rank_tracker_loop():
+
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+
+        await asyncio.sleep(
+            60
+        )
+
+        now = time.time()
+
+        changed = False
+
+        for key, last_active in list(
+            rank_activity.items()
+        ):
+
+            # 5 dakikadan fazla mesaj yoksa
+            # aktif sayma
+            if now - last_active > 300:
+
+                del rank_activity[key]
+
+                rank_channel.pop(
+                    key,
+                    None
+                )
+
+                continue
+
+            guild_id, user_id = key
+
+            user = get_user_rank(
+                guild_id,
+                user_id
+            )
+
+            old_rank = get_rank(
+                user["seconds"]
+            )
+
+            # Her dakika 60 saniye aktif süre
+            user["seconds"] += 60
+
+            new_rank = get_rank(
+                user["seconds"]
+            )
+
+            changed = True
+
+            # -------------------------------------------------
+            # RANK ATLAMA MESAJI
+            # -------------------------------------------------
+
+            if new_rank > old_rank:
+
+                channel_id = rank_channel.get(
+                    key
+                )
+
+                channel = (
+                    bot.get_channel(
+                        channel_id
+                    )
+                    if channel_id
+                    else None
+                )
+
+                if channel:
+
+                    try:
+
+                        await channel.send(
+                            (
+                                f"🎉 <@{user_id}> "
+                                f"**Rank {new_rank}** oldun! 🏆\n"
+                                f"⏱️ Toplam aktif süren: "
+                                f"**{format_duration(user['seconds'])}**"
+                            )
+                        )
+
+                    except Exception:
+                        pass
+
+        if changed:
+
+            save_data()
 
 
 # =========================================================
@@ -1716,26 +2280,19 @@ async def autosave_loop():
 
     while True:
 
-        await asyncio.sleep(300)
+        await asyncio.sleep(
+            300
+        )
 
         save_data()
 
-        print("Veriler otomatik kaydedildi.")
+        print(
+            "Veriler otomatik kaydedildi."
+        )
 
 
 # =========================================================
 # BOT BAŞLAT
-# =========================================================
-
-async def start_background_tasks():
-
-    bot.loop.create_task(
-        autosave_loop()
-    )
-
-
-# =========================================================
-# TOKEN
 # =========================================================
 
 if not BOT_TOKEN:
@@ -1746,4 +2303,6 @@ if not BOT_TOKEN:
 
 else:
 
-    bot.run(BOT_TOKEN)
+    bot.run(
+        BOT_TOKEN
+    )
