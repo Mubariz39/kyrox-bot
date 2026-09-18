@@ -87,7 +87,6 @@ RANK_TIMES = [
 ]
 
 # SUNUCUNDAKİ VAR OLAN ROL ID'LERİ (Sadece Sayı Yazın)
-# Örnek: 1: 123456789012345678
 RANK_ROLES = {
     1: 0,   # Rank 1 Rol ID
     2: 0,   # Rank 2 Rol ID
@@ -172,7 +171,7 @@ async def set_rank_role(member, rank):
     except Exception: pass
 
 # =========================================================
-# BUTTON & VIEW SINIFLARI
+# TICKET & EĞLENCE VIEW SINIFLARI
 # =========================================================
 
 class TicketView(discord.ui.View):
@@ -201,7 +200,7 @@ class TicketView(discord.ui.View):
         
         embed = discord.Embed(
             title="🎫 Destek Talebi Oluşturuldu",
-            description=f"Merhaba {interaction.user.mention}, yetkililer kısa süre içinde ilgilenecektir.\nBileti kapatmak için aşağıdaki butona basabilirsiniz.",
+            description=f"Merhaba {interaction.user.mention}, yetkililer kısa süre içinde sizinle ilgilenecektir.\nBileti kapatmak için aşağıdaki butona tıklayabilirsiniz.",
             color=discord.Color.green()
         )
         await ticket_chan.send(embed=embed, view=CloseTicketView())
@@ -244,6 +243,8 @@ async def on_ready():
     bot.add_view(TicketView())
     bot.add_view(CloseTicketView())
     bot.add_view(GiveawayView())
+
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="Kyxor Sunucusunu | /help"))
 
     try:
         if TEST_GUILD_ID:
@@ -311,19 +312,6 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-@bot.event
-async def on_presence_update(before, after):
-    if not after.bot and after.guild:
-        rank_online[(after.guild.id, after.id)] = (after.status != discord.Status.offline)
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if member.bot: return
-    if after.channel and not before.channel:
-        voice_online[(member.guild.id, member.id)] = True
-    elif before.channel and not after.channel:
-        voice_online.pop((member.guild.id, member.id), None)
-
 # =========================================================
 # SLASH KOMUTLARI
 # =========================================================
@@ -335,27 +323,13 @@ async def ping(interaction: discord.Interaction):
 @bot.tree.command(name="help", description="Tüm komut listesini gösterir.")
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(title="🤖 Kyxor Bot Komut Rehberi", color=discord.Color.blurple())
-    embed.add_field(name="🛡️ Moderasyon", value="`/clear`, `/warn`, `/warnings`, `/mute`, `/unmute`, `/kick`, `/ban`, `/unban`, `/slowmode`, `/lock`, `/unlock`", inline=False)
+    embed.add_field(name="🛡️ Moderasyon", value="`/clear`, `/warn`, `/warnings`, `/mute`, `/unmute`, `/kick`, `/ban`, `/unban`", inline=False)
     embed.add_field(name="🏆 Rank & Profil", value="`/rank`, `/rank-list`, `/profile`", inline=False)
-    embed.add_field(name="⚙️ Sunucu Ayarları", value="`/set-welcome`, `/set-autorole`, `/set-log`, `/ticket-setup`", inline=False)
+    embed.add_field(name="⚙️ Sunucu Ayarları & Ticket", value="`/set-welcome`, `/set-autorole`, `/set-log`, `/ticket-setup`", inline=False)
     embed.add_field(name="🎉 Eğlence & Etkileşim", value="`/giveaway`, `/poll`, `/say`, `/announce`", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="clear", description="Mesajları siler.")
-@app_commands.describe(amount="Silinecek mesaj sayısı")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def clear(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
-    await interaction.response.defer(ephemeral=True)
-    deleted = await interaction.channel.purge(limit=amount)
-    await interaction.followup.send(f"🧹 **{len(deleted)}** mesaj silindi.", ephemeral=True)
-
-@bot.tree.command(name="warn", description="Kullanıcıya uyarı verir.")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "Sebep yok"):
-    gid, uid = str(interaction.guild.id), str(member.id)
-    data["warnings"].setdefault(gid, {}).setdefault(uid, []).append({"reason": reason, "time": datetime.now(timezone.utc).isoformat()})
-    save_data()
-    await interaction.response.send_message(f"⚠️ {member.mention} uyarıldı. Sebep: **{reason}**")
+# --- RANK & SIRALAMA ---
 
 @bot.tree.command(name="rank", description="Rank durumunu gösterir.")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
@@ -378,8 +352,132 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
         embed.add_field(name="Sonraki Rank", value="👑 Maksimum Seviye!", inline=False)
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name="rank-list", description="En aktif 10 üyeyi sıralar.")
+async def rank_list(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    gr = data["rank"].get(gid, {})
+    if not gr: 
+        return await interaction.response.send_message("Henüz aktiflik verisi kaydolmamış.")
+    
+    sorted_users = sorted(gr.items(), key=lambda x: x[1].get("seconds", 0), reverse=True)[:10]
+
+    description = ""
+    medals = ["🥇", "🥈", "🥉"]
+
+    for idx, (uid, udata) in enumerate(sorted_users, 1):
+        m = interaction.guild.get_member(int(uid))
+        name = m.mention if m else f"Bilinmeyen Kullanıcı ({uid})"
+        sec = udata.get("seconds", 0)
+        rank_lvl = get_rank(sec)
+        medal = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
+        
+        description += f"{medal} {name} — **{format_duration(sec)}** (Rank {rank_lvl})\n"
+
+    embed = discord.Embed(
+        title="🏆 Sunucu Aktiflik Sıralaması (Top 10)",
+        description=description,
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text="Ses ve metin kanallarında durdukça süreniz artar.")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="profile", description="Profil kartını gösterir.")
+async def profile(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    u_rank = get_user_rank(interaction.guild.id, member.id)
+    sec = u_rank.get("seconds", 0)
+    current, _, _ = rank_progress(sec)
+    
+    role_id = RANK_ROLES.get(current)
+    role_mention = f"<@&{role_id}>" if role_id and isinstance(role_id, int) and role_id != 0 else "Ranksız"
+
+    embed = discord.Embed(title=f"👤 {member.display_name} Profili", color=member.color)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="ID", value=f"`{member.id}`", inline=True)
+    embed.add_field(name="Rank", value=f"**Seviye {current}** ({role_mention})", inline=True)
+    embed.add_field(name="Toplam Aktiflik Süresi", value=format_duration(sec), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+# --- SUNUCU & TICKET AYARLARI ---
+
+@bot.tree.command(name="ticket-setup", description="Destek bileti sistemini kurar.")
+@app_commands.checks.has_permissions(administrator=True)
+async def ticket_setup(interaction: discord.Interaction, category: discord.CategoryChannel = None):
+    if category:
+        s = get_guild_data(interaction.guild.id)
+        s["ticket_category"] = category.id
+        save_data()
+    
+    embed = discord.Embed(
+        title="🎫 Destek & İletişim",
+        description="Bir sorununuz veya talebiniz varsa aşağıdaki butona basarak destek talebi oluşturabilirsiniz.",
+        color=discord.Color.blue()
+    )
+    await interaction.channel.send(embed=embed, view=TicketView())
+    await interaction.response.send_message("✅ Destek sistemi kanala kuruldu.", ephemeral=True)
+
+@bot.tree.command(name="set-welcome", description="Hoş geldin kanalını ayarlar.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_welcome(interaction: discord.Interaction, channel: discord.TextChannel):
+    s = get_guild_data(interaction.guild.id)
+    s["welcome_channel"] = channel.id
+    save_data()
+    await interaction.response.send_message(f"✅ Hoş geldin kanalı {channel.mention} olarak ayarlandı.")
+
+@bot.tree.command(name="set-autorole", description="Oto-rolü ayarlar.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_autorole(interaction: discord.Interaction, role: discord.Role):
+    s = get_guild_data(interaction.guild.id)
+    s["auto_role"] = role.id
+    save_data()
+    await interaction.response.send_message(f"✅ Otomatik verilecek rol {role.mention} olarak ayarlandı.")
+
+# --- MODERASYON & EĞLENCE ---
+
+@bot.tree.command(name="clear", description="Mesajları siler.")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def clear(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+    await interaction.response.defer(ephemeral=True)
+    deleted = await interaction.channel.purge(limit=amount)
+    await interaction.followup.send(f"🧹 **{len(deleted)}** mesaj silindi.", ephemeral=True)
+
+@bot.tree.command(name="warn", description="Kullanıcıya uyarı verir.")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "Sebep yok"):
+    gid, uid = str(interaction.guild.id), str(member.id)
+    data["warnings"].setdefault(gid, {}).setdefault(uid, []).append({"reason": reason, "time": datetime.now(timezone.utc).isoformat()})
+    save_data()
+    await interaction.response.send_message(f"⚠️ {member.mention} uyarıldı. Sebep: **{reason}**")
+
+@bot.tree.command(name="mute", description="Kullanıcıyı müteler.")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def mute(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = "Sebep yok"):
+    await member.timeout(timedelta(minutes=minutes), reason=reason)
+    await interaction.response.send_message(f"🔇 {member.mention} **{minutes} dakika** susturuldu.")
+
+@bot.tree.command(name="giveaway", description="Çekiliş başlatır.")
+@app_commands.checks.has_permissions(administrator=True)
+async def giveaway(interaction: discord.Interaction, prize: str, duration_minutes: int, winners: int = 1):
+    view = GiveawayView()
+    embed = discord.Embed(
+        title="🎉 ÇEKİLİŞ BAŞLADI!",
+        description=f"**Ödül:** {prize}\n**Kazanan Sayısı:** {winners}\n**Süre:** {duration_minutes} dakika\n\nKatılmak için **🎉 Katıl** butonuna basın!",
+        color=discord.Color.brand_green()
+    )
+    await interaction.response.send_message("Çekiliş oluşturuldu.", ephemeral=True)
+    msg = await interaction.channel.send(embed=embed, view=view)
+
+    await asyncio.sleep(duration_minutes * 60)
+
+    if not view.participants:
+        await interaction.channel.send(f"🎉 **{prize}** çekilişi sona erdi. Katılan olmadığı için kazanan seçilemedi.")
+    else:
+        winner_ids = random.sample(list(view.participants), min(winners, len(view.participants)))
+        winner_mentions = ", ".join([f"<@{uid}>" for uid in winner_ids])
+        await interaction.channel.send(f"🎉 Tebrikler {winner_mentions}! **{prize}** çekilişini kazandınız!")
+
 # =========================================================
-# ARKA PLAN DÖNGÜSÜ
+# ARKA PLAN DÖNGÜSÜ (RANK SÜRESİ HESAPLAMA)
 # =========================================================
 
 @tasks.loop(seconds=60)
