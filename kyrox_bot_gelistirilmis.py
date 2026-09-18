@@ -73,7 +73,7 @@ rank_online = {}
 voice_online = {}
 background_started = False
 
-# RANK SÜRELERİ
+# RANK SÜRELERİ (Saniye Cinsinden)
 RANK_TIMES = [
     2 * 60 * 60,         # Rank 1 - 2 saat
     6 * 60 * 60,         # Rank 2 - 6 saat
@@ -87,17 +87,18 @@ RANK_TIMES = [
     90 * 24 * 60 * 60,   # Rank 10 - 3 ay
 ]
 
+# SUNUCUNDAKİ VAR OLAN ROL ID'LERİNİ BURAYA YAZIN
 RANK_ROLES = {
-    1: ("Yeni Üye", discord.Color.green()),
-    2: ("Aktif Üye", discord.Color.blue()),
-    3: ("Sohbetçi", discord.Color.purple()),
-    4: ("Tecrübeli", discord.Color.gold()),
-    5: ("Kıdemli", discord.Color.orange()),
-    6: ("Usta", discord.Color.red()),
-    7: ("Elit", discord.Color.from_rgb(0, 200, 255)),
-    8: ("Efsane", discord.Color.from_rgb(255, 0, 255)),
-    9: ("Şampiyon", discord.Color.from_rgb(255, 80, 0)),
-    10: ("Kyxor Efsanesi", discord.Color.from_rgb(255, 215, 0))
+    1: Yeni Uye,  # Rank 1 Rol ID
+    2: Aktif Uye,  # Rank 2 Rol ID
+    3: Sohbetçi,  # Rank 3 Rol ID
+    4: Tecrubeli,  # Rank 4 Rol ID
+    5: Kıdemli,  # Rank 5 Rol ID
+    6: Usta,  # Rank 6 Rol ID
+    7: Elit,  # Rank 7 Rol ID
+    8: Efsane,  # Rank 8 Rol ID
+    9: Şampiyon,  # Rank 9 Rol ID
+    10:  Kyrox Efsanesi # Rank 10 Rol ID
 }
 
 BAD_WORDS = ["küfür1", "küfür2", "amk", "aq", "pic", "sik", "piç"]
@@ -150,29 +151,24 @@ def rank_progress(seconds):
     progress = max(0, min(seconds - previous, target - previous))
     return (current, target, progress)
 
-async def ensure_rank_roles(guild):
-    roles = {}
-    for rank, (role_name, role_color) in RANK_ROLES.items():
-        role = discord.utils.get(guild.roles, name=role_name)
-        if role is None:
-            try:
-                role = await guild.create_role(name=role_name, color=role_color, reason="Kyxor Rank")
-            except Exception: continue
-        roles[rank] = role
-    return roles
-
 async def set_rank_role(member, rank):
     if rank <= 0 or member.bot: return
     guild = member.guild
-    roles = await ensure_rank_roles(guild)
-    target_role = roles.get(rank)
+    
+    target_role_id = RANK_ROLES.get(rank)
+    if not target_role_id: return
+    
+    target_role = guild.get_role(target_role_id)
     if not target_role or not guild.me or target_role >= guild.me.top_role: return
 
-    rank_role_names = {name for name, _ in RANK_ROLES.values()}
-    old_roles = [r for r in member.roles if r.name in rank_role_names and r != target_role]
+    all_rank_role_ids = set(RANK_ROLES.values())
+    old_roles = [r for r in member.roles if r.id in all_rank_role_ids and r.id != target_role_id]
+    
     try:
-        if old_roles: await member.remove_roles(*old_roles)
-        if target_role not in member.roles: await member.add_roles(target_role)
+        if old_roles: 
+            await member.remove_roles(*old_roles)
+        if target_role not in member.roles: 
+            await member.add_roles(target_role)
     except Exception: pass
 
 async def send_log(guild, title, description, color=discord.Color.blue()):
@@ -272,7 +268,6 @@ async def on_ready():
         print("Sync Hatası:", e)
 
     for guild in bot.guilds:
-        await ensure_rank_roles(guild)
         for member in guild.members:
             if not member.bot:
                 rank_online[(guild.id, member.id)] = (member.status == discord.Status.online)
@@ -448,11 +443,13 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     u = get_user_rank(interaction.guild.id, member.id)
     sec = u.get("seconds", 0)
     current, target, _ = rank_progress(sec)
-    r_info = RANK_ROLES.get(current, ("Ranksız", discord.Color.default()))
+    
+    role_id = RANK_ROLES.get(current)
+    role_mention = f"<@&{role_id}>" if role_id else "Ranksız"
 
-    embed = discord.Embed(title=f"🏆 {member.display_name} Rank Bilgisi", color=r_info[1])
+    embed = discord.Embed(title=f"🏆 {member.display_name} Rank Bilgisi", color=discord.Color.blue())
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="Mevcut Rank", value=f"**{current}** - {r_info[0]}", inline=False)
+    embed.add_field(name="Mevcut Rank", value=f"**Seviye {current}** - {role_mention}", inline=False)
     embed.add_field(name="Aktiflik Süresi", value=format_duration(sec), inline=False)
     if target:
         embed.add_field(name="Sonraki Ranka Kalan", value=format_duration(target - sec), inline=False)
@@ -482,12 +479,14 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
     u_rank = get_user_rank(interaction.guild.id, member.id)
     sec = u_rank.get("seconds", 0)
     current, _, _ = rank_progress(sec)
-    r_info = RANK_ROLES.get(current, ("Ranksız", discord.Color.default()))
+    
+    role_id = RANK_ROLES.get(current)
+    role_mention = f"<@&{role_id}>" if role_id else "Ranksız"
 
     embed = discord.Embed(title=f"👤 {member.display_name} Profili", color=member.color)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="ID", value=f"`{member.id}`", inline=True)
-    embed.add_field(name="Rank", value=f"**{r_info[0]}** (Rank {current})", inline=True)
+    embed.add_field(name="Rank", value=f"**Seviye {current}** ({role_mention})", inline=True)
     embed.add_field(name="Sohbet / Ses Süresi", value=format_duration(sec), inline=False)
     await interaction.response.send_message(embed=embed)
 
