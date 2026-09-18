@@ -1044,7 +1044,108 @@ async def ranklar_command(
         embed=embed
     )
 
+# =========================================================
+# RANK LIST
+# =========================================================
 
+@bot.tree.command(
+    name="ranklist",
+    description="Sunucudaki herkesin rankını gösterir."
+)
+async def ranklist_command(
+    interaction: discord.Interaction
+):
+
+    guild = interaction.guild
+
+    if guild is None:
+        await interaction.response.send_message(
+            "❌ Bu komut sadece sunucuda kullanılabilir.",
+            ephemeral=True
+        )
+        return
+
+    members = []
+
+    for member in guild.members:
+
+        if member.bot:
+            continue
+
+        user = get_user_data(member.id)
+
+        seconds = user["online_seconds"]
+
+        rank = get_rank_from_seconds(seconds)
+
+        rank_name = get_rank_name(rank)
+
+        members.append(
+            (
+                member,
+                rank,
+                rank_name,
+                seconds
+            )
+        )
+
+    # Önce rank, sonra online süreye göre sırala
+    members.sort(
+        key=lambda x: (x[1], x[3]),
+        reverse=True
+    )
+
+    if not members:
+        await interaction.response.send_message(
+            "❌ Henüz üye verisi bulunmuyor."
+        )
+        return
+
+    # Discord mesaj limiti için sayfalama
+    pages = []
+
+    current_page = ""
+
+    for index, (
+        member,
+        rank,
+        rank_name,
+        seconds
+    ) in enumerate(
+        members,
+        start=1
+    ):
+
+        line = (
+            f"**{index}.** {member.mention} "
+            f"— 🏆 **{rank}/10** "
+            f"`{rank_name}` "
+            f"— 🕐 `{format_time(seconds)}`\n"
+        )
+
+        if len(current_page) + len(line) > 3500:
+            pages.append(current_page)
+            current_page = ""
+
+        current_page += line
+
+    if current_page:
+        pages.append(current_page)
+
+    # İlk sayfayı gönder
+    embed = discord.Embed(
+        title="🏆 Kyrox Rank Listesi",
+        description=pages[0],
+        color=discord.Color.gold()
+    )
+
+    embed.set_footer(
+        text=f"Toplam {len(members)} üye • Sayfa 1/{len(pages)}"
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 # =========================================================
 # PROFILE
 # =========================================================
