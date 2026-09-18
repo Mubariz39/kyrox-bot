@@ -86,18 +86,19 @@ RANK_TIMES = [
     90 * 24 * 60 * 60,   # Rank 10 - 3 ay
 ]
 
-# SUNUCUNDAKİ VAR OLAN ROL ID'LERİ (Sayısal Olarak)
+# SUNUCUNDAKİ VAR OLAN ROL ID'LERİ (Sadece Sayı Yazın)
+# Örnek: 1: 123456789012345678
 RANK_ROLES = {
-    1: Yeni Uye,      # Rank 1 Rol ID
-    2: Aktif Uye,     # Rank 2 Rol ID
-    3: Sohbetçi,      # Rank 3 Rol ID
-    4: Tecrubeli,     # Rank 4 Rol ID
-    5: Kıdemli,       # Rank 5 Rol ID
-    6: Usta,          # Rank 6 Rol ID
-    7: Elit,          # Rank 7 Rol ID
-    8: Efsane,        # Rank 8 Rol ID
-    9: Şampiyon,      # Rank 9 Rol ID
-    10: Kyrox Efsanesi # Rank 10 Rol ID
+    1: 0,   # Rank 1 Rol ID
+    2: 0,   # Rank 2 Rol ID
+    3: 0,   # Rank 3 Rol ID
+    4: 0,   # Rank 4 Rol ID
+    5: 0,   # Rank 5 Rol ID
+    6: 0,   # Rank 6 Rol ID
+    7: 0,   # Rank 7 Rol ID
+    8: 0,   # Rank 8 Rol ID
+    9: 0,   # Rank 9 Rol ID
+    10: 0   # Rank 10 Rol ID
 }
 
 BAD_WORDS = ["küfür1", "küfür2", "amk", "aq", "pic", "sik", "piç"]
@@ -155,12 +156,12 @@ async def set_rank_role(member, rank):
     guild = member.guild
     
     target_role_id = RANK_ROLES.get(rank)
-    if not target_role_id or not isinstance(target_role_id, int): return
+    if not target_role_id or not isinstance(target_role_id, int) or target_role_id == 0: return
     
     target_role = guild.get_role(target_role_id)
     if not target_role or not guild.me or target_role >= guild.me.top_role: return
 
-    all_rank_role_ids = set([v for v in RANK_ROLES.values() if isinstance(v, int)])
+    all_rank_role_ids = set([v for v in RANK_ROLES.values() if isinstance(v, int) and v != 0])
     old_roles = [r for r in member.roles if r.id in all_rank_role_ids and r.id != target_role_id]
     
     try:
@@ -170,19 +171,8 @@ async def set_rank_role(member, rank):
             await member.add_roles(target_role)
     except Exception: pass
 
-async def send_log(guild, title, description, color=discord.Color.blue()):
-    if not guild: return
-    settings = get_guild_data(guild.id)
-    cid = settings.get("log_channel", 0)
-    if not cid: return
-    channel = guild.get_channel(cid)
-    if channel:
-        embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.now(timezone.utc))
-        try: await channel.send(embed=embed)
-        except Exception: pass
-
 # =========================================================
-# BUTTON & VIEW SINIFLARI (TICKET & ÇEKİLİŞ)
+# BUTTON & VIEW SINIFLARI
 # =========================================================
 
 class TicketView(discord.ui.View):
@@ -281,7 +271,6 @@ async def on_member_join(member):
     guild = member.guild
     settings = get_guild_data(guild.id)
 
-    # Oto Rol
     auto_role_id = settings.get("auto_role", 0)
     if auto_role_id:
         role = guild.get_role(auto_role_id)
@@ -289,7 +278,6 @@ async def on_member_join(member):
             try: await member.add_roles(role)
             except Exception: pass
 
-    # Hoş Geldin Mesajı
     welcome_id = settings.get("welcome_channel", 0)
     if welcome_id:
         chan = guild.get_channel(welcome_id)
@@ -369,71 +357,6 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     save_data()
     await interaction.response.send_message(f"⚠️ {member.mention} uyarıldı. Sebep: **{reason}**")
 
-@bot.tree.command(name="warnings", description="Kullanıcının uyarılarını gösterir.")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def warnings(interaction: discord.Interaction, member: discord.Member):
-    gid, uid = str(interaction.guild.id), str(member.id)
-    warns = data["warnings"].get(gid, {}).get(uid, [])
-    if not warns:
-        return await interaction.response.send_message(f"✅ {member.mention} kullanıcısının uyarısı yok.")
-    txt = "\n".join([f"**{i}.** {w['reason']}" for i, w in enumerate(warns[-10:], 1)])
-    embed = discord.Embed(title=f"⚠️ {member.display_name} Uyarıları", description=txt, color=discord.Color.orange())
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="mute", description="Kullanıcıyı susturur.")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def mute(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = "Sebep yok"):
-    await member.timeout(timedelta(minutes=minutes), reason=reason)
-    await interaction.response.send_message(f"🔇 {member.mention} **{minutes} dakika** susturuldu.")
-
-@bot.tree.command(name="unmute", description="Susturmayı kaldırır.")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def unmute(interaction: discord.Interaction, member: discord.Member):
-    await member.timeout(None)
-    await interaction.response.send_message(f"🔊 {member.mention} susturması kaldırıldı.")
-
-@bot.tree.command(name="kick", description="Kullanıcıyı atar.")
-@app_commands.checks.has_permissions(kick_members=True)
-async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "Sebep yok"):
-    await member.kick(reason=reason)
-    await interaction.response.send_message(f"👢 {member.mention} atıldı.")
-
-@bot.tree.command(name="ban", description="Kullanıcıyı yasaklar.")
-@app_commands.checks.has_permissions(ban_members=True)
-async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "Sebep yok"):
-    await member.ban(reason=reason)
-    await interaction.response.send_message(f"🔨 {member.mention} yasaklandı.")
-
-@bot.tree.command(name="unban", description="Ban kaldırır.")
-@app_commands.checks.has_permissions(ban_members=True)
-async def unban(interaction: discord.Interaction, user_id: str):
-    user = await bot.fetch_user(int(user_id))
-    await interaction.guild.unban(user)
-    await interaction.response.send_message(f"🔓 **{user}** banı kaldırıldı.")
-
-@bot.tree.command(name="slowmode", description="Yavaş mod ayarlar.")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def slowmode(interaction: discord.Interaction, seconds: int):
-    await interaction.channel.edit(slowmode_delay=seconds)
-    await interaction.response.send_message(f"⏱️ Yavaş mod **{seconds}sn** yapıldı.")
-
-@bot.tree.command(name="lock", description="Kanalı kilitler.")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def lock(interaction: discord.Interaction):
-    ow = interaction.channel.overwrites_for(interaction.guild.default_role)
-    ow.send_messages = False
-    await interaction.channel.set_permissions(interaction.guild.default_role, overwrite=ow)
-    await interaction.response.send_message("🔒 Kanal kilitlendi.")
-
-@bot.tree.command(name="unlock", description="Kanal kilidini açar.")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def unlock(interaction: discord.Interaction):
-    ow = interaction.channel.overwrites_for(interaction.guild.default_role)
-    ow.send_messages = None
-    await interaction.channel.set_permissions(interaction.guild.default_role, overwrite=ow)
-    await interaction.response.send_message("🔓 Kanal kilidi açıldı.")
-
-# --- RANK & PROFİL ---
 @bot.tree.command(name="rank", description="Rank durumunu gösterir.")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
@@ -443,7 +366,7 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     current, target, _ = rank_progress(sec)
     
     role_id = RANK_ROLES.get(current)
-    role_mention = f"<@&{role_id}>" if role_id and isinstance(role_id, int) else "Ranksız"
+    role_mention = f"<@&{role_id}>" if role_id and isinstance(role_id, int) and role_id != 0 else "Ranksız"
 
     embed = discord.Embed(title=f"🏆 {member.display_name} Rank Bilgisi", color=discord.Color.blue())
     embed.set_thumbnail(url=member.display_avatar.url)
@@ -455,132 +378,12 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
         embed.add_field(name="Sonraki Rank", value="👑 Maksimum Seviye!", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="rank-list", description="En aktif 10 üyeyi sıralar.")
-async def rank_list(interaction: discord.Interaction):
-    gid = str(interaction.guild.id)
-    gr = data["rank"].get(gid, {})
-    if not gr: return await interaction.response.send_message("Henüz veri yok.")
-    sorted_r = sorted(gr.items(), key=lambda x: x[1].get("seconds", 0), reverse=True)[:10]
-
-    desc = ""
-    for idx, (uid, udata) in enumerate(sorted_r, 1):
-        m = interaction.guild.get_member(int(uid))
-        name = m.mention if m else f"Kullanıcı ({uid})"
-        s = udata.get("seconds", 0)
-        desc += f"**{idx}.** {name} — **{format_duration(s)}** (Rank {get_rank(s)})\n"
-    embed = discord.Embed(title="🏆 Aktiflik Sıralaması", description=desc, color=discord.Color.gold())
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="profile", description="Profil kartını gösterir.")
-async def profile(interaction: discord.Interaction, member: discord.Member = None):
-    member = member or interaction.user
-    u_rank = get_user_rank(interaction.guild.id, member.id)
-    sec = u_rank.get("seconds", 0)
-    current, _, _ = rank_progress(sec)
-    
-    role_id = RANK_ROLES.get(current)
-    role_mention = f"<@&{role_id}>" if role_id and isinstance(role_id, int) else "Ranksız"
-
-    embed = discord.Embed(title=f"👤 {member.display_name} Profili", color=member.color)
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="ID", value=f"`{member.id}`", inline=True)
-    embed.add_field(name="Rank", value=f"**Seviye {current}** ({role_mention})", inline=True)
-    embed.add_field(name="Sohbet / Ses Süresi", value=format_duration(sec), inline=False)
-    await interaction.response.send_message(embed=embed)
-
-# --- SUNUCU AYARLARI ---
-@bot.tree.command(name="set-welcome", description="Hoş geldin kanalını ayarlar.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_welcome(interaction: discord.Interaction, channel: discord.TextChannel):
-    s = get_guild_data(interaction.guild.id)
-    s["welcome_channel"] = channel.id
-    save_data()
-    await interaction.response.send_message(f"✅ Hoş geldin kanalı {channel.mention} olarak ayarlandı.")
-
-@bot.tree.command(name="set-autorole", description="Oto-rolü ayarlar.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_autorole(interaction: discord.Interaction, role: discord.Role):
-    s = get_guild_data(interaction.guild.id)
-    s["auto_role"] = role.id
-    save_data()
-    await interaction.response.send_message(f"✅ Otomatik verilecek rol {role.mention} olarak ayarlandı.")
-
-@bot.tree.command(name="set-log", description="Log kanalını ayarlar.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_log(interaction: discord.Interaction, channel: discord.TextChannel):
-    s = get_guild_data(interaction.guild.id)
-    s["log_channel"] = channel.id
-    save_data()
-    await interaction.response.send_message(f"✅ Log kanalı {channel.mention} olarak ayarlandı.")
-
-@bot.tree.command(name="ticket-setup", description="Destek bileti sistemini kurar.")
-@app_commands.checks.has_permissions(administrator=True)
-async def ticket_setup(interaction: discord.Interaction, category: discord.CategoryChannel = None):
-    if category:
-        s = get_guild_data(interaction.guild.id)
-        s["ticket_category"] = category.id
-        save_data()
-    
-    embed = discord.Embed(
-        title="🎫 Destek & İletişim",
-        description="Bir sorununuz veya talebiniz varsa aşağıdaki butona basarak destek talebi oluşturabilirsiniz.",
-        color=discord.Color.blue()
-    )
-    await interaction.channel.send(embed=embed, view=TicketView())
-    await interaction.response.send_message("✅ Destek sistemi kanala kuruldu.", ephemeral=True)
-
-# --- EĞLENCE & DİĞER ---
-@bot.tree.command(name="say", description="Bota mesaj yazdırır.")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def say(interaction: discord.Interaction, message: str):
-    await interaction.response.send_message("✅ Gönderildi.", ephemeral=True)
-    await interaction.channel.send(message)
-
-@bot.tree.command(name="announce", description="Duyuru yaptırır.")
-@app_commands.checks.has_permissions(administrator=True)
-async def announce(interaction: discord.Interaction, title: str, message: str):
-    embed = discord.Embed(title=title, description=message, color=discord.Color.brand_green())
-    embed.set_footer(text=f"Duyuran: {interaction.user.display_name}")
-    await interaction.response.send_message("📢 Duyuru yayınlandı.", ephemeral=True)
-    await interaction.channel.send(embed=embed)
-
-@bot.tree.command(name="poll", description="Anket oluşturur.")
-async def poll(interaction: discord.Interaction, question: str):
-    embed = discord.Embed(title="📊 Anket", description=f"**{question}**", color=discord.Color.gold())
-    embed.set_footer(text=f"Oluşturan: {interaction.user.display_name}")
-    await interaction.response.send_message("Anket başlatıldı.", ephemeral=True)
-    msg = await interaction.channel.send(embed=embed)
-    await msg.add_reaction("👍")
-    await msg.add_reaction("👎")
-
-@bot.tree.command(name="giveaway", description="Çekiliş başlatır.")
-@app_commands.checks.has_permissions(administrator=True)
-async def giveaway(interaction: discord.Interaction, prize: str, duration_minutes: int, winners: int = 1):
-    view = GiveawayView()
-    embed = discord.Embed(
-        title="🎉 ÇEKİLİŞ BAŞLADI!",
-        description=f"**Ödül:** {prize}\n**Kazanan Sayısı:** {winners}\n**Süre:** {duration_minutes} dakika\n\nKatılmak için aşağıdaki **🎉 Katıl** butonuna basın!",
-        color=discord.Color.brand_green()
-    )
-    await interaction.response.send_message("Çekiliş oluşturuldu.", ephemeral=True)
-    msg = await interaction.channel.send(embed=embed, view=view)
-
-    await asyncio.sleep(duration_minutes * 60)
-
-    if not view.participants:
-        await interaction.channel.send(f"🎉 **{prize}** çekilişi sona erdi. Katılan olmadığı için kazanan seçilemedi.")
-    else:
-        winner_ids = random.sample(list(view.participants), min(winners, len(view.participants)))
-        winner_mentions = ", ".join([f"<@{uid}>" for uid in winner_ids])
-        await interaction.channel.send(f"🎉 Tebrikler {winner_mentions}! **{prize}** çekilişini kazandınız!")
-
 # =========================================================
-# ARKA PLAN DÖNGÜSÜ (RANK UPDATER)
+# ARKA PLAN DÖNGÜSÜ
 # =========================================================
 
 @tasks.loop(seconds=60)
 async def rank_updater_task():
-    # 1. Çevrimiçi Aktiflik & Rank Güncellemesi
     for (gid, uid), is_online in list(rank_online.items()):
         if is_online:
             u_rank = get_user_rank(gid, uid)
@@ -594,7 +397,6 @@ async def rank_updater_task():
                     member = guild.get_member(uid)
                     if member: await set_rank_role(member, new_rank)
 
-    # 2. Ses Aktifliği (+1 Dakika Aktiflik)
     for (gid, uid) in list(voice_online.keys()):
         u_rank = get_user_rank(gid, uid)
         u_rank["seconds"] += 60
